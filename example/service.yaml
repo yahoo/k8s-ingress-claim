@@ -1,0 +1,17 @@
+########################################################
+# k8s-ingress-claim Service
+########################################################
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: k8s-ingress-claim
+  name: k8s-ingress-claim
+  namespace: default
+spec:
+  ports:
+  - port: 443
+    targetPort: 443
+    name: https
+  selector:
+    app: k8s-ingress-claim
