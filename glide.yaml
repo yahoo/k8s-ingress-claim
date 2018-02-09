@@ -9,20 +9,19 @@ import:
 - package: gopkg.in/natefinch/lumberjack.v2
   version: ^2.0.0
 - package: k8s.io/api
+  version: release-1.9
   subpackages:
-  - admission/v1alpha1
+  - admission/v1beta1
+  - extensions/v1beta1
 - package: k8s.io/client-go
-  version: ^v4.0.0
+  version: ^v6.0.0
   subpackages:
   - kubernetes
-  - pkg/api/v1
-  - pkg/apis/extensions/v1beta1
   - rest
   - tools/cache
 - package: k8s.io/apimachinery
-  version: release-1.7
+  version: release-1.9
   subpackages:
-  - pkg/api/meta
   - pkg/apis/meta/v1
   - pkg/fields
 testImport:

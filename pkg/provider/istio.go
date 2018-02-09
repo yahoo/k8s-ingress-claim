@@ -5,7 +5,7 @@ package provider
 import (
 	"errors"
 
-	"k8s.io/client-go/pkg/apis/extensions/v1beta1"
+	"k8s.io/api/extensions/v1beta1"
 )
 
 const (

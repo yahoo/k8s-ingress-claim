@@ -9,9 +9,9 @@ import (
 	"io"
 	"net/http"
 
-	"k8s.io/api/admission/v1alpha1"
+	admv1beta1 "k8s.io/api/admission/v1beta1"
+	"k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/pkg/apis/extensions/v1beta1"
 )
 
 var (
@@ -23,21 +23,23 @@ var (
 )
 
 // writeResponse writes the ingressReviewStatus object to the response body
-func writeResponse(rw http.ResponseWriter, admReview *v1alpha1.AdmissionReview, allowed bool, errorMsg string) {
+func writeResponse(rw http.ResponseWriter, admRequest *admv1beta1.AdmissionRequest, allowed bool, errorMsg string) {
 	log.Infof("Responding Allowed: %t for %s on Ingress: %s/%s by user: %s", allowed,
-		admReview.Spec.Operation,
-		admReview.Spec.Namespace,
-		admReview.Spec.Name,
-		admReview.Spec.UserInfo.Username)
+		admRequest.Operation,
+		admRequest.Namespace,
+		admRequest.Name,
+		admRequest.UserInfo.Username)
 
 	if !allowed {
 		log.Errorf("Rejection reason: %s", errorMsg)
 	}
 
-	admReview.Status = v1alpha1.AdmissionReviewStatus{
-		Allowed: allowed,
-		Result: &v1.Status{
-			Reason: v1.StatusReason(errorMsg),
+	admReview := admv1beta1.AdmissionReview{
+		Response: &admv1beta1.AdmissionResponse{
+			Allowed: allowed,
+			Result: &v1.Status{
+				Reason: v1.StatusReason(errorMsg),
+			},
 		},
 	}
 
@@ -66,44 +68,47 @@ func webhookHandler(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	admReview := &v1alpha1.AdmissionReview{}
-	err := json.NewDecoder(req.Body).Decode(admReview)
+	admReview := admv1beta1.AdmissionReview{
+		Request:  &admv1beta1.AdmissionRequest{},
+		Response: &admv1beta1.AdmissionResponse{},
+	}
+	err := json.NewDecoder(req.Body).Decode(&admReview)
 	if err != nil {
 		errorMsg := fmt.Sprintf("Failed to decode the request body json into an AdmissionReview resource: %s",
 			err.Error())
-		writeResponse(rw, admReview, false, errorMsg)
+		writeResponse(rw, admReview.Request, false, errorMsg)
 		return
 	}
-	log.Debugf("Incoming AdmissionReview for resource: %v, kind: %v", admReview.Spec.Resource, admReview.Spec.Kind)
+	log.Debugf("Incoming AdmissionReview for resource: %v, kind: %v", admReview.Request.Resource, admReview.Kind)
 
 	// when bypass flag is set, all the admission webhook calls return true unconditionally
 	if *admitAll == true {
 		log.Warnf("admitAll flag is set to true. Allowing Ingress admission review request to pass through " +
 			"without validation.")
-		writeResponse(rw, admReview, true, "")
+		writeResponse(rw, admReview.Request, true, "")
 		return
 	}
 
-	if admReview.Spec.Resource != ingressResourceType {
-		errorMsg := fmt.Sprintf("Incoming resource: %v is not an Ingress resource", admReview.Spec.Resource)
-		writeResponse(rw, admReview, false, errorMsg)
+	if admReview.Request.Resource != ingressResourceType {
+		errorMsg := fmt.Sprintf("Incoming resource: %v is not an Ingress resource", admReview.Request.Resource)
+		writeResponse(rw, admReview.Request, false, errorMsg)
 		return
 	}
 
 	// decode the incoming object into an ingress resource
 	ingress := &v1beta1.Ingress{}
-	if err := json.Unmarshal(admReview.Spec.Object.Raw, ingress); err != nil {
+	if err := json.Unmarshal(admReview.Request.Object.Raw, ingress); err != nil {
 		errorMsg := fmt.Sprintf("Failed to decode the raw object resource on the admission review request "+
 			"into an Ingress resource: %s", err.Error())
-		writeResponse(rw, admReview, false, errorMsg)
+		writeResponse(rw, admReview.Request, false, errorMsg)
 		return
 	}
 	log.Debugf("Decoded Ingress spec %v", ingress)
 
-	if err := json.Unmarshal(admReview.Spec.Object.Raw, &ingress.ObjectMeta); err != nil {
+	if err := json.Unmarshal(admReview.Request.Object.Raw, &ingress.ObjectMeta); err != nil {
 		errorMsg := fmt.Sprintf("Failed to parse the Ingress metadata from the raw object resource on the "+
 			"admission review request: %s", err.Error())
-		writeResponse(rw, admReview, false, errorMsg)
+		writeResponse(rw, admReview.Request, false, errorMsg)
 		return
 	}
 	log.Debugf("Decoded Ingress metadata %v", ingress.ObjectMeta)
@@ -115,19 +120,19 @@ func webhookHandler(rw http.ResponseWriter, req *http.Request) {
 	err = p.ValidateSemantics(ingress)
 	if err != nil {
 		errorMsg := fmt.Sprintf("Ingress validation checks failed: %s", err.Error())
-		writeResponse(rw, admReview, false, errorMsg)
+		writeResponse(rw, admReview.Request, false, errorMsg)
 		return
 	}
 
 	// perform the domain claims check with the ingress provider
 	err = p.ValidateDomainClaims(ingress)
 	if err != nil {
-		writeResponse(rw, admReview, false, err.Error())
+		writeResponse(rw, admReview.Request, false, err.Error())
 		return
 	}
 
 	log.Infof("Ingress %s in namespace %s contains no duplicate domains.", ingress.Name, ingress.Namespace)
-	writeResponse(rw, admReview, true, "")
+	writeResponse(rw, admReview.Request, true, "")
 }
 
 // statusHandler serves the /status.html response which is always 200.
