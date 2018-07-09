@@ -5,25 +5,22 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os/user"
-	"strings"
 	"testing"
 
 	"github.com/yahoo/k8s-ingress-claim/pkg/provider"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/api/admission/v1alpha1"
+	admv1beta1 "k8s.io/api/admission/v1beta1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	"k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/pkg/api"
-	"k8s.io/client-go/pkg/apis/extensions/v1beta1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -46,8 +43,8 @@ var (
 			},
 		},
 	}
-	templateAdmReview = &v1alpha1.AdmissionReview{
-		Spec: v1alpha1.AdmissionReviewSpec{
+	templateAdmReview = admv1beta1.AdmissionReview{
+		Request: &admv1beta1.AdmissionRequest{
 			Resource: v1.GroupVersionResource{
 				Group:    "extensions",
 				Version:  "v1beta1",
@@ -72,38 +69,24 @@ var (
 				})(),
 			},
 		},
+		Response: &admv1beta1.AdmissionResponse{},
 	}
 )
 
-func cloneIngress(templateIngress *v1beta1.Ingress) *v1beta1.Ingress {
-	testIngressObj, err := api.Scheme.DeepCopy(templateIngress)
-	testIngress, ok := testIngressObj.(*v1beta1.Ingress)
-	if err != nil || !ok {
-		panic(fmt.Sprintf("Cloning Ingress failed with err: %v, ok: %t", err.Error(), ok))
-	}
-	return testIngress
-}
-
-func cloneAdmissionReview(templateAdmReview *v1alpha1.AdmissionReview) *v1alpha1.AdmissionReview {
-	testAdmReviewObj, err := api.Scheme.DeepCopy(templateAdmReview)
-	testAdmReview, ok := testAdmReviewObj.(*v1alpha1.AdmissionReview)
-	if err != nil || !ok {
-		panic(fmt.Sprintf("Cloning test AdmissionReview spec failed with err: %v, ok: %t", err.Error(), ok))
-	}
-	return testAdmReview
-}
-
-func setIngressOnAdmissionReview(testAdmReview *v1alpha1.AdmissionReview, testIngress *v1beta1.Ingress) {
+func setIngressOnAdmissionReview(testAdmReview *admv1beta1.AdmissionReview, testIngress *v1beta1.Ingress) {
 	ing := new(bytes.Buffer)
 	err := json.NewEncoder(ing).Encode(testIngress)
 	if err != nil {
 		panic(err.Error())
 	}
-	testAdmReview.Spec.Object.Raw = ing.Bytes()
+	testAdmReview.Request.Object.Raw = ing.Bytes()
 }
 
-func getAdmissionReview(rw *httptest.ResponseRecorder) *v1alpha1.AdmissionReview {
-	admReview := &v1alpha1.AdmissionReview{}
+func getAdmissionReview(rw *httptest.ResponseRecorder) *admv1beta1.AdmissionReview {
+	admReview := &admv1beta1.AdmissionReview{
+		Response: &admv1beta1.AdmissionResponse{},
+		Request:  &admv1beta1.AdmissionRequest{},
+	}
 	err := json.NewDecoder(rw.Result().Body).Decode(admReview)
 	if err != nil {
 		panic(err.Error())
@@ -111,7 +94,7 @@ func getAdmissionReview(rw *httptest.ResponseRecorder) *v1alpha1.AdmissionReview
 	return admReview
 }
 
-func constructPostBody(admReview *v1alpha1.AdmissionReview) io.Reader {
+func constructPostBody(admReview *admv1beta1.AdmissionReview) io.Reader {
 	body := new(bytes.Buffer)
 	err := json.NewEncoder(body).Encode(admReview)
 	if err != nil {
@@ -122,13 +105,16 @@ func constructPostBody(admReview *v1alpha1.AdmissionReview) io.Reader {
 
 func TestAllowedWriteResponse(t *testing.T) {
 	rw := httptest.NewRecorder()
-	review := &v1alpha1.AdmissionReview{}
-	writeResponse(rw, review, true, "")
+	review := &admv1beta1.AdmissionReview{
+		Request:  &admv1beta1.AdmissionRequest{},
+		Response: &admv1beta1.AdmissionResponse{},
+	}
+	writeResponse(rw, review.Request, true, "")
 
 	admReview := getAdmissionReview(rw)
 
-	expectedAdmReview := &v1alpha1.AdmissionReview{
-		Status: v1alpha1.AdmissionReviewStatus{
+	expectedAdmReview := &admv1beta1.AdmissionReview{
+		Response: &admv1beta1.AdmissionResponse{
 			Allowed: true,
 			Result: &v1.Status{
 				Reason: v1.StatusReason(""),
@@ -136,20 +122,23 @@ func TestAllowedWriteResponse(t *testing.T) {
 		},
 	}
 	assert.Equal(t,
-		expectedAdmReview.Status,
-		admReview.Status,
+		expectedAdmReview.Response.Result.Status,
+		admReview.Response.Result.Status,
 		"writeResponse should write Allowed: true for AdmissionReviewStatus")
 }
 
 func TestNotAllowedWriteResponse(t *testing.T) {
 	rw := httptest.NewRecorder()
-	review := &v1alpha1.AdmissionReview{}
-	writeResponse(rw, review, false, "Duplicate domain exists.")
+	review := &admv1beta1.AdmissionReview{
+		Request:  &admv1beta1.AdmissionRequest{},
+		Response: &admv1beta1.AdmissionResponse{},
+	}
+	writeResponse(rw, review.Request, false, "Duplicate domain exists.")
 
 	admReview := getAdmissionReview(rw)
 
-	expectedAdmReview := &v1alpha1.AdmissionReview{
-		Status: v1alpha1.AdmissionReviewStatus{
+	expectedAdmReview := &admv1beta1.AdmissionReview{
+		Response: &admv1beta1.AdmissionResponse{
 			Allowed: false,
 			Result: &v1.Status{
 				Reason: v1.StatusReason("Duplicate domain exists."),
@@ -157,8 +146,8 @@ func TestNotAllowedWriteResponse(t *testing.T) {
 		},
 	}
 	assert.Equal(t,
-		expectedAdmReview.Status,
-		admReview.Status,
+		expectedAdmReview.Response.Result.Status,
+		admReview.Response.Result.Status,
 		"writeResponse should write Allowed: false for AdmissionReviewStatus")
 }
 
@@ -191,15 +180,15 @@ func TestWrongReqBodyWebhookHandler(t *testing.T) {
 
 	admReview := getAdmissionReview(rw)
 
-	assert.False(t, admReview.Status.Allowed, "should fail if request doesn't have a body")
-	assert.Contains(t, admReview.Status.Result.Reason, "Failed to decode the request body json into an "+
+	assert.False(t, admReview.Response.Allowed, "should fail if request doesn't have a body")
+	assert.Contains(t, admReview.Response.Result.Reason, "Failed to decode the request body json into an "+
 		"AdmissionReview resource: ")
 }
 
 func TestAdmitAllWebhookHandler(t *testing.T) {
 	rw := httptest.NewRecorder()
 
-	testSpec := cloneAdmissionReview(templateAdmReview)
+	testSpec := templateAdmReview.DeepCopy()
 
 	*admitAll = true
 
@@ -208,15 +197,15 @@ func TestAdmitAllWebhookHandler(t *testing.T) {
 
 	admReview := getAdmissionReview(rw)
 
-	assert.True(t, admReview.Status.Allowed, "should allow ingress to pass through if admitAll flag is set")
+	assert.True(t, admReview.Response.Allowed, "should allow ingress to pass through if admitAll flag is set")
 	*admitAll = false
 }
 
 func TestIngressResourceTypeWebhookHandler(t *testing.T) {
 	rw := httptest.NewRecorder()
 
-	testSpec := &v1alpha1.AdmissionReview{
-		Spec: v1alpha1.AdmissionReviewSpec{
+	testSpec := &admv1beta1.AdmissionReview{
+		Request: &admv1beta1.AdmissionRequest{
 			Resource: v1.GroupVersionResource{
 				Group:    "",
 				Version:  "v1",
@@ -230,35 +219,35 @@ func TestIngressResourceTypeWebhookHandler(t *testing.T) {
 
 	admReview := getAdmissionReview(rw)
 
-	assert.False(t, admReview.Status.Allowed, "should reject if the resource is not Ingress type")
-	assert.Contains(t, admReview.Status.Result.Reason, "Incoming resource: { v1 pods} is not an Ingress resource")
+	assert.False(t, admReview.Response.Allowed, "should reject if the resource is not Ingress type")
+	assert.Contains(t, admReview.Response.Result.Reason, "Incoming resource: { v1 pods} is not an Ingress resource")
 }
 
 func TestIngressDecodeWebhookHandler(t *testing.T) {
 	rw := httptest.NewRecorder()
 
-	testSpec := cloneAdmissionReview(templateAdmReview)
-	testSpec.Spec.Object.Raw = []byte("\"{}\"")
+	testSpec := templateAdmReview.DeepCopy()
+	testSpec.Request.Object.Raw = []byte("\"{}\"")
 
 	body, _ := ioutil.ReadAll(constructPostBody(testSpec))
 	bytes := new(bytes.Buffer)
-	bytes.WriteString(strings.Replace(string(body), "{}", "invalid json", 1))
+	bytes.WriteString(string(body))
 
 	req := httptest.NewRequest("POST", "http://localhost:8080/", bytes)
 	webhookHandler(rw, req)
 
 	admReview := getAdmissionReview(rw)
 
-	assert.False(t, admReview.Status.Allowed, "should reject if the review object cannot be decoded to an Ingress")
-	assert.Contains(t, admReview.Status.Result.Reason, "Failed to decode the raw object resource on the "+
+	assert.False(t, admReview.Response.Allowed, "should reject if the review object cannot be decoded to an Ingress")
+	assert.Contains(t, admReview.Response.Result.Reason, "Failed to decode the raw object resource on the "+
 		"admission review request into an Ingress resource: ")
 }
 
 func TestIngressValidationWebhookHandler(t *testing.T) {
 	rw := httptest.NewRecorder()
 
-	testSpec := cloneAdmissionReview(templateAdmReview)
-	testIngress := cloneIngress(templateIngress)
+	testSpec := templateAdmReview.DeepCopy()
+	testIngress := templateIngress.DeepCopy()
 	testIngress.Annotations[string(provider.Ports)] = ""
 	setIngressOnAdmissionReview(testSpec, testIngress)
 
@@ -267,16 +256,16 @@ func TestIngressValidationWebhookHandler(t *testing.T) {
 
 	admReview := getAdmissionReview(rw)
 
-	assert.False(t, admReview.Status.Allowed, "should reject if the Ingress validation checks fail")
-	assert.Contains(t, admReview.Status.Result.Reason, "Ingress validation checks failed: ")
+	assert.False(t, admReview.Response.Allowed, "should reject if the Ingress validation checks fail")
+	assert.Contains(t, admReview.Response.Result.Reason, "Ingress validation checks failed: ")
 }
 
 func TestNoDuplicateDomainsWebhookHandler(t *testing.T) {
 	rw := httptest.NewRecorder()
 
-	testSpec := cloneAdmissionReview(templateAdmReview)
-	testIngress := cloneIngress(templateIngress)
-	testIngress2 := cloneIngress(templateIngress)
+	testSpec := templateAdmReview.DeepCopy()
+	testIngress := templateIngress.DeepCopy()
+	testIngress2 := templateIngress.DeepCopy()
 	testIngress2.Annotations[string(provider.DefaultDomain)] = "app-domain-default2.company.com"
 	testIngress2.Annotations[string(provider.Ports)] = "443,80"
 	testIngress2.Annotations[string(provider.Aliases)] = "app-domain-test2.company.com"
@@ -295,14 +284,14 @@ func TestNoDuplicateDomainsWebhookHandler(t *testing.T) {
 
 	admReview := getAdmissionReview(rw)
 
-	assert.True(t, admReview.Status.Allowed, "should approve if no duplicate domains found")
+	assert.True(t, admReview.Response.Allowed, "should approve if no duplicate domains found")
 }
 
 func TestNoDuplicateDomainsInSameIngressWebhookHandler(t *testing.T) {
 	rw := httptest.NewRecorder()
 
-	testSpec := cloneAdmissionReview(templateAdmReview)
-	testIngress := cloneIngress(templateIngress)
+	testSpec := templateAdmReview.DeepCopy()
+	testIngress := templateIngress.DeepCopy()
 
 	indexer = cache.NewIndexer(cache.DeletionHandlingMetaNamespaceKeyFunc,
 		cache.Indexers{provider.ATS: helper.GetProviderByName(provider.ATS).DomainsIndexFunc})
@@ -316,15 +305,15 @@ func TestNoDuplicateDomainsInSameIngressWebhookHandler(t *testing.T) {
 
 	admReview := getAdmissionReview(rw)
 
-	assert.True(t, admReview.Status.Allowed, "should approve even if domain exists within the same ingress object")
+	assert.True(t, admReview.Response.Allowed, "should approve even if domain exists within the same ingress object")
 }
 
 func TestDuplicateDomainsInSameNamespaceWebhookHandler(t *testing.T) {
 	rw := httptest.NewRecorder()
 
-	testSpec := cloneAdmissionReview(templateAdmReview)
-	testIngress := cloneIngress(templateIngress)
-	testIngress2 := cloneIngress(templateIngress)
+	testSpec := templateAdmReview.DeepCopy()
+	testIngress := templateIngress.DeepCopy()
+	testIngress2 := templateIngress.DeepCopy()
 	testIngress2.Annotations[string(provider.DefaultDomain)] = "app-domain-default.company.com"
 	testIngress2.Annotations[string(provider.Ports)] = "443,80"
 	testIngress2.Name = "second-ingress"
@@ -342,17 +331,17 @@ func TestDuplicateDomainsInSameNamespaceWebhookHandler(t *testing.T) {
 
 	admReview := getAdmissionReview(rw)
 
-	assert.False(t, admReview.Status.Allowed, "should reject if duplicate domain exists even within the same ns")
-	assert.Contains(t, admReview.Status.Result.Reason, "Domain app-domain-default.company.com already "+
+	assert.False(t, admReview.Response.Allowed, "should reject if duplicate domain exists even within the same ns")
+	assert.Contains(t, admReview.Response.Result.Reason, "Domain app-domain-default.company.com already "+
 		"exists. Ingress second-ingress in namespace test-namespace owns this domain.")
 }
 
 func TestDuplicateDomainsWebhookHandler(t *testing.T) {
 	rw := httptest.NewRecorder()
 
-	testSpec := cloneAdmissionReview(templateAdmReview)
-	testIngress := cloneIngress(templateIngress)
-	testIngress2 := cloneIngress(templateIngress)
+	testSpec := templateAdmReview.DeepCopy()
+	testIngress := templateIngress.DeepCopy()
+	testIngress2 := templateIngress.DeepCopy()
 	testIngress2.Annotations[string(provider.DefaultDomain)] = "default-app-domain.company.com"
 	testIngress2.Annotations[string(provider.Ports)] = "443,80"
 	testIngress2.Annotations[string(provider.Aliases)] = "app-domain-alias.company.com"
@@ -371,8 +360,8 @@ func TestDuplicateDomainsWebhookHandler(t *testing.T) {
 
 	admReview := getAdmissionReview(rw)
 
-	assert.False(t, admReview.Status.Allowed, "should reject if duplicate domain exists on any other ns/ingress")
-	assert.Contains(t, admReview.Status.Result.Reason, "Domain app-domain-alias.company.com already "+
+	assert.False(t, admReview.Response.Allowed, "should reject if duplicate domain exists on any other ns/ingress")
+	assert.Contains(t, admReview.Response.Result.Reason, "Domain app-domain-alias.company.com already "+
 		"exists. Ingress second-ingress in namespace second-namespace owns this domain.")
 }
 

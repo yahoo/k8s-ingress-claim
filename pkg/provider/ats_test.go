@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/pkg/apis/extensions/v1beta1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -29,9 +29,9 @@ func TestATSServesIngress(t *testing.T) {
 		expected bool
 	}{
 		{
-			"should return false when annotation not present",
+			"should return true when annotation not present",
 			&v1beta1.Ingress{},
-			false,
+			true,
 		},
 		{
 			"should return false when annotation set to different provider",
